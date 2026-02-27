@@ -290,22 +290,8 @@ module peAiHub './shared/private-endpoint.bicep' = if (enablePrivateEndpoints &&
   }
 }
 
-module peAiProject './shared/private-endpoint.bicep' = if (enablePrivateEndpoints && deployAIFoundry) {
-  name: 'pe-ai-project'
-  scope: rg
-  params: {
-    name: 'pe-proj-${resourceToken}'
-    location: location
-    tags: tags
-    serviceResourceId: aiFoundry.?outputs.?projectId ?? ''
-    groupId: 'amlworkspace'
-    subnetId: networking.?outputs.?privateEndpointsSubnetId ?? ''
-    privateDnsZoneId: privateDnsZones.?outputs.?mlWorkspaceDnsZoneId ?? ''
-    additionalDnsZoneIds: [
-      privateDnsZones.?outputs.?mlNotebooksDnsZoneId ?? ''
-    ]
-  }
-}
+// NOTE: Private endpoints for AI Foundry projects must be created on the Hub, not the Project.
+// The pe-ai-hub module above covers both Hub and Project connectivity.
 
 // Reference the deployed AI Foundry to get the key (only when deploying web with AI Foundry)
 resource aiFoundryRef 'Microsoft.CognitiveServices/accounts@2024-10-01' existing = if (deployAIFoundry && !empty(containerImage)) {
