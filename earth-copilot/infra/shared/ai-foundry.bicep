@@ -9,6 +9,9 @@ param sku object = {
 @description('Deploy AI models')
 param deployModels bool = true
 
+@description('Deploy GPT-5 model (requires GlobalStandard quota)')
+param deployGpt5 bool = false
+
 @description('Deploy AI Agent Service (Hub + Project)')
 param deployAgentService bool = true
 
@@ -99,7 +102,7 @@ resource gpt4oMiniDeployment 'Microsoft.CognitiveServices/accounts/deployments@2
 }
 
 // Deploy GPT-5 model (default model — GlobalStandard SKU required)
-resource gpt5Deployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = if (deployModels) {
+resource gpt5Deployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = if (deployModels && deployGpt5) {
   parent: aiFoundry
   name: 'gpt-5'
   sku: {
