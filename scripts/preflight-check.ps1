@@ -18,6 +18,9 @@
 
     Run this BEFORE triggering the deployment workflow.
 
+.PARAMETER SkipProbe
+    Skip the live ARM probe deployment test (faster, but won't catch catalog-vs-ARM discrepancies).
+
 .PARAMETER SkipGitHub
     Skip GitHub-related checks (useful for CI/CD or disconnected dev).
 
@@ -36,6 +39,7 @@
 [CmdletBinding()]
 param(
     [switch]$SkipGitHub,
+    [switch]$SkipProbe,
     [string]$Location = '',
     [string]$EnvironmentName = 'dev',
     [string]$ResourceGroupName = ''
@@ -263,6 +267,8 @@ Write-Pass "Selected region: $Location"
 # Check model availability in the selected region
 Write-Host ""
 Write-Host "  Checking model availability in $Location..." -ForegroundColor DarkGray
+Write-Info "NOTE: The model listing API can show models as available that ARM rejects at deploy time."
+Write-Info "Regions proven to work: eastus2, eastus. If this check passes but deploy fails, switch region."
 
 # Models we need: gpt-4o (primary) and gpt-4o-mini (secondary)
 $targetModels = @(
@@ -321,6 +327,78 @@ if ($failedModels.Count -gt 0) {
     }
     Write-Host ""
     Write-Warn "ACTION: Pick a different region or update ai-foundry.bicep with available models."
+}
+
+# ─── 6b. PROBE DEPLOYMENT (actually tests ARM, not just the catalog API) ───
+$modelsToProbe = $modelResults | Where-Object { $_.Status -eq 'ok' }
+if ($SkipProbe) {
+    Write-Info "  Probe test skipped (--SkipProbe). Use probe to catch catalog-vs-ARM discrepancies."
+} elseif ($modelsToProbe.Count -gt 0) {
+    Write-Host ""
+    Write-Host "  Probe-testing model deployment against ARM (the catalog API can be unreliable)..." -ForegroundColor DarkGray
+
+    $probeRg   = "rg-preflight-probe-$(Get-Random -Maximum 99999)"
+    $probeName = "probe$(Get-Random -Maximum 99999)"
+
+    # Create temporary resource group
+    $rgCreated = $false
+    try {
+        az group create --name $probeRg --location $Location --tags "purpose=preflight-probe" -o none 2>$null
+        if ($LASTEXITCODE -eq 0) { $rgCreated = $true }
+    } catch { }
+
+    if ($rgCreated) {
+        # Create temporary AI Services account
+        $accountCreated = $false
+        try {
+            az cognitiveservices account create `
+                --name $probeName `
+                --resource-group $probeRg `
+                --location $Location `
+                --kind AIServices `
+                --sku S0 `
+                --custom-domain $probeName `
+                --yes -o none 2>$null
+            if ($LASTEXITCODE -eq 0) { $accountCreated = $true }
+        } catch { }
+
+        if ($accountCreated) {
+            # Try deploying the primary model (gpt-4o)
+            $primaryModel = $modelsToProbe | Where-Object { $_.Name -eq 'gpt-4o' } | Select-Object -First 1
+            if ($primaryModel) {
+                $probeResult = az cognitiveservices account deployment create `
+                    --name $probeName `
+                    --resource-group $probeRg `
+                    --deployment-name "probe-gpt4o" `
+                    --model-name $primaryModel.Name `
+                    --model-version $primaryModel.Version `
+                    --model-format OpenAI `
+                    --sku-name $primaryModel.Sku `
+                    --sku-capacity 1 `
+                    -o none 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Pass "PROBE: $($primaryModel.Name) with $($primaryModel.Sku) deployed successfully in $Location"
+                } else {
+                    $errMsg = ($probeResult | Out-String).Trim()
+                    Write-Fail "PROBE: $($primaryModel.Name) with $($primaryModel.Sku) REJECTED by ARM in $Location"
+                    Write-Info "  ARM error: $errMsg"
+                    Write-Info "  The model listing API said this was available, but ARM rejected it."
+                    Write-Info "  Switch to a proven region (eastus2, eastus) or try a different model."
+                }
+            }
+        } else {
+            Write-Warn "PROBE: Could not create temporary AI Services account — skipping probe test"
+        }
+
+        # Clean up: delete the temporary resource group (async)
+        Write-Host "  Cleaning up probe resources..." -ForegroundColor DarkGray
+        az group delete --name $probeRg --yes --no-wait -o none 2>$null
+        # Also purge the soft-deleted account so it doesn't interfere with future deployments
+        Start-Sleep -Seconds 3
+        az cognitiveservices account purge --name $probeName --resource-group $probeRg --location $Location -o none 2>$null
+    } else {
+        Write-Warn "PROBE: Could not create temporary resource group — skipping probe test"
+    }
 }
 
 # ══════════════════════════════════════════════════════════════════════
