@@ -37,6 +37,20 @@ These instructions work for any Azure subscription:
 - **Azure CLI**: Required for Azure authentication and resource provider registration ([Install in Step 3](#step-3-install-required-cli-tools))
 - **GitHub CLI**: Optional but recommended for easier secret configuration ([Install in Step 3](#step-3-install-required-cli-tools))
 
+### Pre-Flight Checklist (Recommended)
+
+Before deploying, run the pre-flight validation script to catch common issues **before** they fail in CI/CD:
+
+```powershell
+# Interactive — picks region, checks models, quota, soft-deletes, GitHub config, SP roles
+.\scripts\preflight-check.ps1
+
+# Or specify region directly
+.\scripts\preflight-check.ps1 -Location eastus2
+```
+
+The script validates: CLI tools, Azure auth, resource providers, soft-deleted resources (Key Vault / Cognitive Services), model + SKU availability in your chosen region, App Service quota, GitHub environment + secrets, service principal roles, and Bicep compilation.
+
 ### Required Azure Permissions
 
 You need these permissions (all configured manually before deploying):
