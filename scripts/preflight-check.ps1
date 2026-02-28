@@ -150,7 +150,9 @@ if ($accountJson) {
 Write-Section "3/9  Resource Providers"
 
 foreach ($ns in $RequiredProviders) {
-    $state = az provider show --namespace $ns --query "registrationState" -o tsv 2>$null
+    # Take last line only — az CLI sometimes emits update/warning notices on stdout after login
+    $stateRaw = az provider show --namespace $ns --query "registrationState" -o tsv 2>$null
+    $state = if ($stateRaw) { ($stateRaw | Select-Object -Last 1).Trim() } else { '' }
     if ($state -eq 'Registered') {
         Write-Pass "$ns — Registered"
     } elseif ($state -eq 'Registering') {
@@ -390,12 +392,12 @@ if ($SkipProbe) {
             Write-Warn "PROBE: Could not create temporary AI Services account — skipping probe test"
         }
 
-        # Clean up: delete the temporary resource group (async)
+        # Clean up: delete the Cognitive Services account first (synchronously), purge it,
+        # then delete the RG asynchronously. This prevents orphaned soft-deleted accounts.
         Write-Host "  Cleaning up probe resources..." -ForegroundColor DarkGray
-        az group delete --name $probeRg --yes --no-wait -o none 2>$null
-        # Also purge the soft-deleted account so it doesn't interfere with future deployments
-        Start-Sleep -Seconds 3
+        az cognitiveservices account delete --name $probeName --resource-group $probeRg -o none 2>$null
         az cognitiveservices account purge --name $probeName --resource-group $probeRg --location $Location -o none 2>$null
+        az group delete --name $probeRg --yes --no-wait -o none 2>$null
     } else {
         Write-Warn "PROBE: Could not create temporary resource group — skipping probe test"
     }
