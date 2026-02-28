@@ -310,7 +310,7 @@ jobs:
             AZURE_OPENAI_NAME=$(az cognitiveservices account list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?kind=='AIServices' || kind=='OpenAI'].name | [0]" -o tsv)
             AZURE_OPENAI_KEY=""
             AZURE_OPENAI_ENDPOINT=""
-            AZURE_OPENAI_DEPLOYMENT_NAME="gpt-5"
+            AZURE_OPENAI_DEPLOYMENT_NAME="gpt-4dot1"
             AZURE_OPENAI_AVAILABLE_MODELS=""
             USE_MANAGED_IDENTITY="true"
             if [ -n "$AZURE_OPENAI_NAME" ]; then
@@ -369,7 +369,7 @@ jobs:
             # Get AI Foundry endpoint (AIServices is the new kind for AI Foundry)
             AZURE_OPENAI_NAME=$(az cognitiveservices account list --resource-group ${{ env.RESOURCE_GROUP }} --query "[?kind=='AIServices' || kind=='OpenAI'].name | [0]" -o tsv)
             AZURE_OPENAI_KEY=""
-            AZURE_OPENAI_DEPLOYMENT_NAME="gpt-5"
+            AZURE_OPENAI_DEPLOYMENT_NAME="gpt-4dot1"
             AZURE_OPENAI_AVAILABLE_MODELS=""
             USE_MANAGED_IDENTITY="true"
             if [ -n "$AZURE_OPENAI_NAME" ]; then

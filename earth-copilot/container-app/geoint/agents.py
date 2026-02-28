@@ -833,8 +833,9 @@ How the {aspect_focus} has evolved over the {_calculate_time_span(before_date, a
         
         async with aiohttp.ClientSession() as session:
             logger.info(" Making HTTP request to Azure OpenAI...")
+            deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4dot1")
             async with session.post(
-                f"{azure_openai_endpoint}/openai/deployments/gpt-4o/chat/completions?api-version=2024-02-15-preview",
+                f"{azure_openai_endpoint}/openai/deployments/{deployment_name}/chat/completions?api-version=2024-02-15-preview",
                 headers=headers,
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=60)

@@ -62,10 +62,10 @@ resource aiFoundry 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' = {
   }
 }
 
-// Deploy GPT-4o model
-resource gpt4oDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = if (deployModels) {
+// Deploy GPT-4.1 model (successor to GPT-4o)
+resource gpt41Deployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = if (deployModels) {
   parent: aiFoundry
-  name: 'gpt-4o'
+  name: 'gpt-4dot1'
   sku: {
     name: 'GlobalStandard'
     capacity: 10  // 10K TPM — conservative default to avoid quota failures on new subscriptions
@@ -73,17 +73,17 @@ resource gpt4oDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-
   properties: {
     model: {
       format: 'OpenAI'
-      name: 'gpt-4o'
-      version: '2024-11-20'
+      name: 'gpt-4.1'
+      version: '2025-04-14'
     }
     versionUpgradeOption: 'OnceNewDefaultVersionAvailable'
   }
 }
 
-// Deploy GPT-4o-mini model (faster, cheaper option)
-resource gpt4oMiniDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = if (deployModels) {
+// Deploy GPT-4.1-mini model (faster, cheaper option)
+resource gpt41MiniDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = if (deployModels) {
   parent: aiFoundry
-  name: 'gpt-4o-mini'
+  name: 'gpt-4dot1-mini'
   sku: {
     name: 'GlobalStandard'
     capacity: 10  // 10K TPM — conservative default to avoid quota failures on new subscriptions
@@ -91,13 +91,13 @@ resource gpt4oMiniDeployment 'Microsoft.CognitiveServices/accounts/deployments@2
   properties: {
     model: {
       format: 'OpenAI'
-      name: 'gpt-4o-mini'
-      version: '2024-07-18'
+      name: 'gpt-4.1-mini'
+      version: '2025-04-14'
     }
     versionUpgradeOption: 'OnceNewDefaultVersionAvailable'
   }
   dependsOn: [
-    gpt4oDeployment
+    gpt41Deployment
   ]
 }
 
@@ -118,7 +118,7 @@ resource gpt5Deployment 'Microsoft.CognitiveServices/accounts/deployments@2024-1
     versionUpgradeOption: 'OnceNewDefaultVersionAvailable'
   }
   dependsOn: [
-    gpt4oMiniDeployment
+    gpt41MiniDeployment
   ]
 }
 
