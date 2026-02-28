@@ -63,7 +63,7 @@ resource aiFoundry 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' = {
 }
 
 // Deploy GPT-4.1 model (successor to GPT-4o)
-resource gpt41Deployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = if (deployModels) {
+resource gpt41Deployment 'Microsoft.CognitiveServices/accounts/deployments@2025-04-01-preview' = if (deployModels) {
   parent: aiFoundry
   name: 'gpt-4dot1'
   sku: {
@@ -81,7 +81,7 @@ resource gpt41Deployment 'Microsoft.CognitiveServices/accounts/deployments@2024-
 }
 
 // Deploy GPT-4.1-mini model (faster, cheaper option)
-resource gpt41MiniDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = if (deployModels) {
+resource gpt41MiniDeployment 'Microsoft.CognitiveServices/accounts/deployments@2025-04-01-preview' = if (deployModels) {
   parent: aiFoundry
   name: 'gpt-4dot1-mini'
   sku: {
@@ -102,7 +102,7 @@ resource gpt41MiniDeployment 'Microsoft.CognitiveServices/accounts/deployments@2
 }
 
 // Deploy GPT-5 model (default model — GlobalStandard SKU required)
-resource gpt5Deployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = if (deployModels && deployGpt5) {
+resource gpt5Deployment 'Microsoft.CognitiveServices/accounts/deployments@2025-04-01-preview' = if (deployModels && deployGpt5) {
   parent: aiFoundry
   name: 'gpt-5'
   sku: {
