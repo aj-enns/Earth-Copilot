@@ -59,6 +59,20 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = {
           ]
         }
       }
+      {
+        name: 'snet-app-service'
+        properties: {
+          addressPrefix: '10.0.4.0/24'
+          delegations: [
+            {
+              name: 'Microsoft.Web.serverFarms'
+              properties: {
+                serviceName: 'Microsoft.Web/serverFarms'
+              }
+            }
+          ]
+        }
+      }
     ]
   }
 }
@@ -67,3 +81,4 @@ output vnetId string = vnet.id
 output containerAppsSubnetId string = vnet.properties.subnets[0].id
 output privateEndpointsSubnetId string = vnet.properties.subnets[1].id
 output agentPoolSubnetId string = vnet.properties.subnets[2].id
+output appServiceSubnetId string = vnet.properties.subnets[3].id

@@ -656,13 +656,9 @@ jobs:
             ENABLE_PE="true"
           fi
           
-          # Determine SKU: S1 required for VNet integration, F1 otherwise
-          if [ "$ENABLE_PE" == "true" ]; then
-            SKU="S1"
-            echo "  Private endpoints enabled — using S1 SKU for VNet integration"
-          else
-            SKU="F1"
-          fi
+          # P1v3 used for all scenarios (subscription has Premium v3 quota only)
+          SKU="P1v3"
+          echo "  Using P1v3 SKU (Premium v3)"
           
           # Create Web App if it doesn't exist
           if [ "$WA_EXISTS" != "true" ]; then
@@ -709,12 +705,12 @@ jobs:
                 --query "appServicePlanId" -o tsv | xargs -I{} basename {})
               CURRENT_SKU=$(az appservice plan show --name "$ASP_NAME" --resource-group "${{ env.RESOURCE_GROUP }}" \
                 --query "sku.name" -o tsv)
-              if [ "$CURRENT_SKU" == "F1" ] || [ "$CURRENT_SKU" == "B1" ]; then
-                echo "  Upgrading App Service Plan to S1 for VNet integration..."
+              if [ "$CURRENT_SKU" != "P1v3" ]; then
+                echo "  Upgrading App Service Plan to P1v3 for VNet integration..."
                 az appservice plan update \
                   --name "$ASP_NAME" \
                   --resource-group "${{ env.RESOURCE_GROUP }}" \
-                  --sku S1 \
+                  --sku P1v3 \
                   --output none
               fi
             fi

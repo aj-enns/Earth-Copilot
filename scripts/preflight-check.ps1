@@ -6,15 +6,18 @@
 .DESCRIPTION
     After 8+ failed deployment attempts, every pitfall has been catalogued.
     This script checks:
-      1. CLI tools (az, gh, bicep)
+      1. CLI tools (az, gh, bicep, node, npm)
       2. Azure authentication & subscription
-      3. Resource provider registration
+      3. Resource provider registration (including Microsoft.Web, Microsoft.Network)
       4. Soft-deleted Key Vaults / Cognitive Services (name collisions)
       5. Existing resource group conflicts
       6. Region + Model availability (interactive picker)
-      7. App Service quota (S1 SKU)
+      7. App Service quota (P1v3 SKU for frontend)
       8. GitHub repo, environment, and AZURE_CREDENTIALS secret
       9. Service principal roles
+     10. App Service name uniqueness & existing plan SKU
+     11. VNet subnet validation (snet-app-service for frontend VNet integration)
+     12. Frontend build pre-requisites (package.json, package-lock.json, Dockerfile)
 
     Run this BEFORE triggering the deployment workflow.
 
@@ -76,9 +79,16 @@ $SupportedRegions = @(
 $RequiredProviders = @(
     'Microsoft.App',
     'Microsoft.ContainerService',
+    'Microsoft.ContainerRegistry',
+    'Microsoft.ContainerInstance',
     'Microsoft.CognitiveServices',
     'Microsoft.Maps',
-    'Microsoft.MachineLearningServices'
+    'Microsoft.MachineLearningServices',
+    'Microsoft.Web',
+    'Microsoft.Network',
+    'Microsoft.Storage',
+    'Microsoft.KeyVault',
+    'Microsoft.OperationalInsights'
 )
 
 # ─── Banner ───────────────────────────────────────────────────────────
@@ -92,7 +102,7 @@ Write-Host ""
 # ══════════════════════════════════════════════════════════════════════
 # 1. CLI TOOLS
 # ══════════════════════════════════════════════════════════════════════
-Write-Section "1/9  CLI Tools"
+Write-Section "1/12  CLI Tools"
 
 # Azure CLI
 if (Get-Command az -ErrorAction SilentlyContinue) {
@@ -126,10 +136,31 @@ if (Get-Command gh -ErrorAction SilentlyContinue) {
     }
 }
 
+# Node.js (required for frontend build)
+if (Get-Command node -ErrorAction SilentlyContinue) {
+    $nodeVersion = (node --version 2>$null).Trim()
+    $nodeMajor = [int]($nodeVersion -replace '^v(\d+)\..*', '$1')
+    if ($nodeMajor -ge 20) {
+        Write-Pass "Node.js installed ($nodeVersion)"
+    } else {
+        Write-Fail "Node.js $nodeVersion is too old. Frontend requires Node.js 20+. Install: winget install OpenJS.NodeJS.LTS"
+    }
+} else {
+    Write-Fail "Node.js not found. Frontend build requires Node.js 20+. Install: winget install OpenJS.NodeJS.LTS"
+}
+
+# npm (required for frontend build)
+if (Get-Command npm -ErrorAction SilentlyContinue) {
+    $npmVersion = (npm --version 2>$null).Trim()
+    Write-Pass "npm installed (v$npmVersion)"
+} else {
+    Write-Fail "npm not found. Install Node.js LTS which includes npm."
+}
+
 # ══════════════════════════════════════════════════════════════════════
 # 2. AZURE AUTHENTICATION & SUBSCRIPTION
 # ══════════════════════════════════════════════════════════════════════
-Write-Section "2/9  Azure Authentication"
+Write-Section "2/12  Azure Authentication"
 
 $accountJson = az account show 2>$null | ConvertFrom-Json
 if ($accountJson) {
@@ -147,7 +178,7 @@ if ($accountJson) {
 # ══════════════════════════════════════════════════════════════════════
 # 3. RESOURCE PROVIDER REGISTRATION
 # ══════════════════════════════════════════════════════════════════════
-Write-Section "3/9  Resource Providers"
+Write-Section "3/12  Resource Providers"
 
 foreach ($ns in $RequiredProviders) {
     # Take last line only — az CLI sometimes emits update/warning notices on stdout after login
@@ -165,7 +196,7 @@ foreach ($ns in $RequiredProviders) {
 # ══════════════════════════════════════════════════════════════════════
 # 4. SOFT-DELETED RESOURCES (Key Vault & Cognitive Services)
 # ══════════════════════════════════════════════════════════════════════
-Write-Section "4/9  Soft-Deleted Resources"
+Write-Section "4/12  Soft-Deleted Resources"
 
 # Key Vaults
 $deletedKvs = az keyvault list-deleted --query "[].{name:name, location:properties.location}" -o json 2>$null | ConvertFrom-Json
@@ -202,7 +233,7 @@ if ($deletedCog -and $deletedCog.Count -gt 0) {
 # ══════════════════════════════════════════════════════════════════════
 # 5. EXISTING RESOURCE GROUP
 # ══════════════════════════════════════════════════════════════════════
-Write-Section "5/9  Existing Resource Group"
+Write-Section "5/12  Existing Resource Group"
 
 # Match the workflow logic: vars.RESOURCE_GROUP || 'rg-earthcopilot'
 $rgName = if ($ResourceGroupName) { $ResourceGroupName } else { 'rg-earthcopilot' }
@@ -223,7 +254,7 @@ if ($rgExists) {
 # ══════════════════════════════════════════════════════════════════════
 # 6. REGION & MODEL SELECTION (Interactive)
 # ══════════════════════════════════════════════════════════════════════
-Write-Section "6/9  Region & Model Availability"
+Write-Section "6/12  Region & Model Availability"
 
 # If no location provided, let user pick
 if ([string]::IsNullOrEmpty($Location)) {
@@ -404,36 +435,92 @@ if ($SkipProbe) {
 }
 
 # ══════════════════════════════════════════════════════════════════════
-# 7. APP SERVICE QUOTA (S1 SKU for frontend)
+# 7. APP SERVICE QUOTA (P1v3 SKU for frontend)
 # ══════════════════════════════════════════════════════════════════════
-Write-Section "7/9  App Service Quota"
-Write-Host "  Checking App Service Plan (S1) availability in $Location..." -ForegroundColor DarkGray
+Write-Section "7/12  App Service Quota"
 
-# List existing App Service Plans across the subscription to see if quota is consumed
-$existingPlans = az appservice plan list --query "[?sku.tier=='Standard' && location=='$Location'].{name:name, rg:resourceGroup}" -o json 2>$null | ConvertFrom-Json
+# The frontend uses P1v3 (Premium v3) for all scenarios. Many restricted subscriptions
+# (MSDN, Sponsorship, Free Trial) have 0 quota for Free/Basic/Standard VMs but do have
+# Premium v3 quota. P1v3 supports VNet integration for private endpoint scenarios.
 
-if ($existingPlans -and $existingPlans.Count -gt 0) {
-    Write-Warn "$($existingPlans.Count) Standard (S1) App Service Plan(s) already exist in $Location."
-    Write-Info "  Some subscriptions limit S1 plans to 1 per region."
-    foreach ($p in $existingPlans) {
-        Write-Info "  - $($p.name) (rg: $($p.rg))"
+Write-Host "  Frontend uses P1v3 (Premium v3) SKU." -ForegroundColor DarkGray
+Write-Host "  Checking Premium v3 App Service quota in $Location..." -ForegroundColor DarkGray
+
+$quotaOk = $false
+
+# ── Check 1: Look for existing Premium v3 plans anywhere in the subscription ──
+$existingPv3Plans = az appservice plan list --query "[?sku.tier=='PremiumV3'].{name:name, rg:resourceGroup, loc:location}" -o json 2>$null | ConvertFrom-Json
+if ($existingPv3Plans -and $existingPv3Plans.Count -gt 0) {
+    Write-Pass "Premium v3 App Service Plan(s) already exist in this subscription (quota is available)"
+    foreach ($p in $existingPv3Plans) {
+        Write-Info "  - $($p.name) in $($p.loc) (rg: $($p.rg))"
     }
-    Write-Info "  If deployment fails with quota error, delete unused plans or pick a different region."
+    $quotaOk = $true
+}
+
+# ── Check 2: Probe-test creating a P1v3 plan (most reliable, opt-in via no --SkipProbe) ──
+if (-not $quotaOk -and -not $SkipProbe) {
+    Write-Host "  Probe-testing P1v3 App Service Plan creation in $Location..." -ForegroundColor DarkGray
+
+    $probeRg   = "rg-preflight-asp-$(Get-Random -Maximum 99999)"
+    $probeName = "asp-probe-$(Get-Random -Maximum 99999)"
+
+    try {
+        az group create --name $probeRg --location $Location --tags "purpose=preflight-probe" -o none 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            $probeOutput = az appservice plan create `
+                --name $probeName `
+                --resource-group $probeRg `
+                --sku P1v3 `
+                --is-linux `
+                --location $Location `
+                -o none 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Write-Pass "PROBE: P1v3 App Service Plan created successfully — Premium v3 quota is available"
+                $quotaOk = $true
+            } else {
+                $errText = ($probeOutput | Out-String).Trim()
+                if ($errText -match 'quota') {
+                    Write-Fail "PROBE: P1v3 App Service Plan creation FAILED — insufficient Premium v3 VM quota"
+                    Write-Info "  Error: $errText"
+                } else {
+                    Write-Fail "PROBE: P1v3 App Service Plan creation FAILED"
+                    Write-Info "  Error: $errText"
+                }
+            }
+        }
+    } catch {
+        Write-Warn "PROBE: Could not create temporary resource group for App Service probe test"
+    }
+
+    # Clean up probe resources
+    Write-Host "  Cleaning up App Service probe resources..." -ForegroundColor DarkGray
+    az group delete --name $probeRg --yes --no-wait -o none 2>$null
+}
+
+# ── Summary & Remediation ──
+if ($quotaOk) {
+    Write-Pass "App Service Premium v3 (P1v3) quota confirmed for $Location"
 } else {
-    # Try checking available SKUs
-    $availableSkus = az appservice list-locations --sku S1 --query "[?name=='$Location']" -o json 2>$null | ConvertFrom-Json
-    if ($availableSkus -and $availableSkus.Count -gt 0) {
-        Write-Pass "App Service S1 SKU available in $Location"
-    } else {
-        # SKU listing may not be reliable, just note it
-        Write-Pass "No existing S1 plans conflict detected in $Location"
-    }
+    Write-Fail "Could not confirm Premium v3 VM quota — P1v3 App Service Plan may fail to deploy"
+    Write-Host ""
+    Write-Host "  ┌─────────────────────────────────────────────────────────────┐" -ForegroundColor Yellow
+    Write-Host "  │  REMEDIATION OPTIONS                                       │" -ForegroundColor Yellow
+    Write-Host "  │                                                             │" -ForegroundColor Yellow
+    Write-Host "  │  Option 1: Request P1v3 quota increase                     │" -ForegroundColor Yellow
+    Write-Host "  │    https://aka.ms/antquotahelp                              │" -ForegroundColor Yellow
+    Write-Host "  │    Request 'P1v3 VMs' >= 1 in $($Location.PadRight(20))    │" -ForegroundColor Yellow
+    Write-Host "  │                                                             │" -ForegroundColor Yellow
+    Write-Host "  │  Option 2: Try a different region                           │" -ForegroundColor Yellow
+    Write-Host "  │    Some regions have different quota allocations.            │" -ForegroundColor Yellow
+    Write-Host "  └─────────────────────────────────────────────────────────────┘" -ForegroundColor Yellow
+    Write-Host ""
 }
 
 # ══════════════════════════════════════════════════════════════════════
 # 8. GITHUB CONFIGURATION
 # ══════════════════════════════════════════════════════════════════════
-Write-Section "8/9  GitHub Configuration"
+Write-Section "8/12  GitHub Configuration"
 
 if ($SkipGitHub) {
     Write-Info "Skipped (--SkipGitHub)"
@@ -512,7 +599,7 @@ if ($SkipGitHub) {
 # ══════════════════════════════════════════════════════════════════════
 # 9. SERVICE PRINCIPAL ROLES
 # ══════════════════════════════════════════════════════════════════════
-Write-Section "9/9  Service Principal Roles"
+Write-Section "9/12  Service Principal Roles"
 
 $spName = "sp-earthcopilot-$EnvironmentName"
 $spList = az ad sp list --display-name $spName --query "[0].{appId:appId, displayName:displayName}" -o json 2>$null | ConvertFrom-Json
@@ -541,6 +628,114 @@ if ($spList -and $spList.appId) {
 } else {
     Write-Warn "Service principal '$spName' not found. Create it per QUICK_DEPLOY.md Step 7."
     Write-Info "  Or the SP may have a different name — check: az ad sp list --display-name sp-earthcopilot"
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# 10. APP SERVICE NAME UNIQUENESS
+# ══════════════════════════════════════════════════════════════════════
+Write-Section "10/12  App Service Name Uniqueness"
+
+# The deploy workflow generates a name like: app-earthcopilot-<8-char-hash>
+# Or the user can provide a custom name. Either way, it must be globally unique.
+$rgName2 = if ($ResourceGroupName) { $ResourceGroupName } else { 'rg-earthcopilot' }
+$existingWebApp = az webapp list --resource-group $rgName2 --query "[0].name" -o tsv 2>$null
+if ($existingWebApp) {
+    Write-Pass "Existing Web App found: $existingWebApp (re-deploy will update it)"
+    # Also check the App Service Plan SKU
+    $aspId = az webapp show --name $existingWebApp --resource-group $rgName2 --query "appServicePlanId" -o tsv 2>$null
+    if ($aspId) {
+        $aspName = ($aspId -split '/')[-1]
+        $aspSku = az appservice plan show --ids $aspId --query "sku.name" -o tsv 2>$null
+        if ($aspSku) {
+            Write-Info "  App Service Plan: $aspName (SKU: $aspSku)"
+            if ($aspSku -eq 'F1' -or $aspSku -eq 'D1') {
+                Write-Warn "  Free/Shared SKU does not support VNet integration. Will be upgraded to P1v3 if private endpoints are enabled."
+            }
+        }
+    }
+} else {
+    Write-Pass "No existing Web App — one will be created during deployment"
+    Write-Info "  Name will be auto-generated (globally unique) or provided via web_app_name input."
+}
+
+# Check if 'express' dependency conflict exists (needed for server.js in deploy)
+Write-Info "  Frontend deployment creates a Node.js Express server at deploy time."
+
+# ══════════════════════════════════════════════════════════════════════
+# 11. VNET SUBNET FOR APP SERVICE (Private Endpoints)
+# ══════════════════════════════════════════════════════════════════════
+Write-Section "11/12  VNet Subnet for App Service"
+
+# The deploy workflow tries to VNet-integrate the App Service with 'snet-app-service'
+# This subnet must exist in the VNet or the VNet integration step will fail
+$rgName3 = if ($ResourceGroupName) { $ResourceGroupName } else { 'rg-earthcopilot' }
+$existingVnet = az network vnet list --resource-group $rgName3 --query "[0].name" -o tsv 2>$null
+if ($existingVnet) {
+    Write-Info "  Found VNet: $existingVnet"
+    $subnets = az network vnet subnet list --resource-group $rgName3 --vnet-name $existingVnet --query "[].name" -o tsv 2>$null
+    if ($subnets -match 'snet-app-service') {
+        Write-Pass "Subnet 'snet-app-service' exists in VNet (required for frontend VNet integration)"
+    } else {
+        Write-Fail "Subnet 'snet-app-service' NOT found in VNet '$existingVnet'"
+        Write-Info "  The deploy workflow requires this subnet for App Service VNet integration."
+        Write-Info "  Available subnets: $($subnets -join ', ')"
+        Write-Info "  This subnet was recently added to networking.bicep. Re-deploy infrastructure to create it:"
+        Write-Info "    az deployment sub create --location $Location --template-file earth-copilot/infra/main.bicep --parameters earth-copilot/infra/main.parameters.json"
+    }
+
+    # Also check other required subnets
+    if ($subnets -match 'snet-container-apps') {
+        Write-Pass "Subnet 'snet-container-apps' exists (backend)"
+    } else {
+        Write-Warn "Subnet 'snet-container-apps' not found"
+    }
+    if ($subnets -match 'snet-private-endpoints') {
+        Write-Pass "Subnet 'snet-private-endpoints' exists (private endpoints)"
+    } else {
+        Write-Warn "Subnet 'snet-private-endpoints' not found"
+    }
+} else {
+    Write-Info "No VNet found — will be created during infrastructure deployment (if private endpoints enabled)"
+    Write-Pass "VNet subnet check skipped (no existing VNet)"
+}
+
+# ══════════════════════════════════════════════════════════════════════
+# 12. FRONTEND BUILD PRE-REQUISITES
+# ══════════════════════════════════════════════════════════════════════
+Write-Section "12/12  Frontend Build Pre-Requisites"
+
+# Check package-lock.json exists (npm ci requires it)
+$lockFile = Join-Path $PSScriptRoot "..\earth-copilot\web-ui\package-lock.json"
+if (Test-Path $lockFile) {
+    Write-Pass "package-lock.json exists (required for npm ci in CI/CD)"
+} else {
+    Write-Fail "package-lock.json not found at earth-copilot/web-ui/"
+    Write-Info "  The GitHub Actions workflow uses 'npm ci' which requires package-lock.json."
+    Write-Info "  Generate it: cd earth-copilot/web-ui && npm install"
+}
+
+# Check package.json exists
+$pkgFile = Join-Path $PSScriptRoot "..\earth-copilot\web-ui\package.json"
+if (Test-Path $pkgFile) {
+    Write-Pass "package.json exists"
+    # Check for required build script
+    $pkgJson = Get-Content $pkgFile -Raw | ConvertFrom-Json
+    if ($pkgJson.scripts -and $pkgJson.scripts.build) {
+        Write-Pass "Build script defined: '$($pkgJson.scripts.build)'"
+    } else {
+        Write-Fail "No 'build' script found in package.json"
+    }
+} else {
+    Write-Fail "package.json not found at earth-copilot/web-ui/"
+}
+
+# Check Dockerfile exists for backend (informational)
+$dockerFile = Join-Path $PSScriptRoot "..\earth-copilot\container-app\Dockerfile.complete"
+if (Test-Path $dockerFile) {
+    Write-Pass "Backend Dockerfile.complete exists"
+} else {
+    Write-Warn "Dockerfile.complete not found at earth-copilot/container-app/"
+    Write-Info "  The CI/CD workflow builds the backend image using Dockerfile.complete"
 }
 
 # ══════════════════════════════════════════════════════════════════════

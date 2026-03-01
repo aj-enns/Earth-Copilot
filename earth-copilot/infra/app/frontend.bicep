@@ -12,15 +12,12 @@ param enablePrivateEndpoints bool = false
 param vnetSubnetId string = ''
 
 param sku object = {
-  name: 'B1'
-  tier: 'Basic'
+  name: 'P1v3'
+  tier: 'PremiumV3'
 }
 
-// Private endpoints require Standard tier or higher for VNet integration
-var effectiveSku = enablePrivateEndpoints ? {
-  name: 'S1'
-  tier: 'Standard'
-} : sku
+// P1v3 supports VNet integration — use same SKU regardless of PE setting
+var effectiveSku = sku
 
 // App Service Plan for hosting the React frontend
 resource appServicePlan 'Microsoft.Web/serverfarms@2023-01-01' = {
