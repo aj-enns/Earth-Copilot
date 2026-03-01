@@ -3557,7 +3557,7 @@ IMPORTANT:
             if '/' in datetime_range:
                 start, end = datetime_range.split('/')
                 logger.info(f"   |--- Start Date: {start}")
-                logger.info(f"   \--- End Date:   {end}")
+                logger.info(f"   \\--- End Date:   {end}")
             logger.info("=" * 80)
             print(f"[OK] Datetime added to STAC query: {datetime_range}")
         else:
