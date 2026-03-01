@@ -474,8 +474,9 @@ geoint_utils = None
 geoint_executor = None
 
 # STAC endpoints configuration (driven by cloud_config for Commercial/Government)
+# These are the SEARCH endpoints (POST) — append /search to the base catalog URL
 STAC_ENDPOINTS = {
-    "planetary_computer": cloud_cfg.stac_api_url,
+    "planetary_computer": cloud_cfg.stac_api_url.rstrip("/") + "/search",
     "veda": "https://openveda.cloud/api/stac/search"
 }
 
