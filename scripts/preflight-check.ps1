@@ -12,11 +12,11 @@
       4. Soft-deleted Key Vaults / Cognitive Services (name collisions)
       5. Existing resource group conflicts
       6. Region + Model availability (interactive picker)
-      7. App Service quota (P1v3 SKU for frontend)
+      7. Static Web App readiness (frontend hosting)
       8. GitHub repo, environment, and AZURE_CREDENTIALS secret
       9. Service principal roles
-     10. App Service name uniqueness & existing plan SKU
-     11. VNet subnet validation (snet-app-service for frontend VNet integration)
+     10. Static Web App discovery & status
+     11. VNet subnet validation (backend private endpoints)
      12. Frontend build pre-requisites (package.json, package-lock.json, Dockerfile)
 
     Run this BEFORE triggering the deployment workflow.
@@ -60,7 +60,7 @@ function Write-Fail   { param([string]$Msg) $script:FailCount++; Write-Host "  [
 function Write-Info   { param([string]$Msg) Write-Host "         $Msg" -ForegroundColor DarkGray }
 function Write-Section { param([string]$Msg) Write-Host "`n========== $Msg ==========" -ForegroundColor White }
 
-# Known-good regions for Earth Copilot (Container Apps + AI Foundry + App Service + Azure Maps)
+# Known-good regions for Earth Copilot (Container Apps + AI Foundry + Static Web Apps + Azure Maps)
 $SupportedRegions = @(
     'eastus', 'eastus2', 'westus', 'westus2', 'westus3',
     'centralus', 'northcentralus', 'southcentralus', 'westcentralus',
@@ -435,87 +435,37 @@ if ($SkipProbe) {
 }
 
 # ══════════════════════════════════════════════════════════════════════
-# 7. APP SERVICE QUOTA (P1v3 SKU for frontend)
+# 7. STATIC WEB APP READINESS (frontend hosting)
 # ══════════════════════════════════════════════════════════════════════
-Write-Section "7/12  App Service Quota"
+Write-Section "7/12  Static Web App Readiness"
 
-# The frontend uses P1v3 (Premium v3) for all scenarios. Many restricted subscriptions
-# (MSDN, Sponsorship, Free Trial) have 0 quota for Free/Basic/Standard VMs but do have
-# Premium v3 quota. P1v3 supports VNet integration for private endpoint scenarios.
+# The frontend uses Azure Static Web Apps (Free tier). No VM quota is required.
+# SWA is available in all regions and requires only the Microsoft.Web provider.
 
-Write-Host "  Frontend uses P1v3 (Premium v3) SKU." -ForegroundColor DarkGray
-Write-Host "  Checking Premium v3 App Service quota in $Location..." -ForegroundColor DarkGray
+Write-Host "  Frontend uses Azure Static Web Apps (Free tier — no VM quota needed)." -ForegroundColor DarkGray
+Write-Host "  Checking Microsoft.Web provider registration..." -ForegroundColor DarkGray
 
-$quotaOk = $false
-
-# ── Check 1: Look for existing Premium v3 plans anywhere in the subscription ──
-$existingPv3Plans = az appservice plan list --query "[?sku.tier=='PremiumV3'].{name:name, rg:resourceGroup, loc:location}" -o json 2>$null | ConvertFrom-Json
-if ($existingPv3Plans -and $existingPv3Plans.Count -gt 0) {
-    Write-Pass "Premium v3 App Service Plan(s) already exist in this subscription (quota is available)"
-    foreach ($p in $existingPv3Plans) {
-        Write-Info "  - $($p.name) in $($p.loc) (rg: $($p.rg))"
-    }
-    $quotaOk = $true
-}
-
-# ── Check 2: Probe-test creating a P1v3 plan (most reliable, opt-in via no --SkipProbe) ──
-if (-not $quotaOk -and -not $SkipProbe) {
-    Write-Host "  Probe-testing P1v3 App Service Plan creation in $Location..." -ForegroundColor DarkGray
-
-    $probeRg   = "rg-preflight-asp-$(Get-Random -Maximum 99999)"
-    $probeName = "asp-probe-$(Get-Random -Maximum 99999)"
-
-    try {
-        az group create --name $probeRg --location $Location --tags "purpose=preflight-probe" -o none 2>$null
-        if ($LASTEXITCODE -eq 0) {
-            $probeOutput = az appservice plan create `
-                --name $probeName `
-                --resource-group $probeRg `
-                --sku P1v3 `
-                --is-linux `
-                --location $Location `
-                -o none 2>&1
-            if ($LASTEXITCODE -eq 0) {
-                Write-Pass "PROBE: P1v3 App Service Plan created successfully — Premium v3 quota is available"
-                $quotaOk = $true
-            } else {
-                $errText = ($probeOutput | Out-String).Trim()
-                if ($errText -match 'quota') {
-                    Write-Fail "PROBE: P1v3 App Service Plan creation FAILED — insufficient Premium v3 VM quota"
-                    Write-Info "  Error: $errText"
-                } else {
-                    Write-Fail "PROBE: P1v3 App Service Plan creation FAILED"
-                    Write-Info "  Error: $errText"
-                }
-            }
-        }
-    } catch {
-        Write-Warn "PROBE: Could not create temporary resource group for App Service probe test"
-    }
-
-    # Clean up probe resources
-    Write-Host "  Cleaning up App Service probe resources..." -ForegroundColor DarkGray
-    az group delete --name $probeRg --yes --no-wait -o none 2>$null
-}
-
-# ── Summary & Remediation ──
-if ($quotaOk) {
-    Write-Pass "App Service Premium v3 (P1v3) quota confirmed for $Location"
+$webProvider = az provider show --namespace Microsoft.Web --query "registrationState" -o tsv 2>$null
+if ($webProvider -eq 'Registered') {
+    Write-Pass "Microsoft.Web provider is registered (required for Static Web Apps)"
 } else {
-    Write-Fail "Could not confirm Premium v3 VM quota — P1v3 App Service Plan may fail to deploy"
-    Write-Host ""
-    Write-Host "  ┌─────────────────────────────────────────────────────────────┐" -ForegroundColor Yellow
-    Write-Host "  │  REMEDIATION OPTIONS                                       │" -ForegroundColor Yellow
-    Write-Host "  │                                                             │" -ForegroundColor Yellow
-    Write-Host "  │  Option 1: Request P1v3 quota increase                     │" -ForegroundColor Yellow
-    Write-Host "  │    https://aka.ms/antquotahelp                              │" -ForegroundColor Yellow
-    Write-Host "  │    Request 'P1v3 VMs' >= 1 in $($Location.PadRight(20))    │" -ForegroundColor Yellow
-    Write-Host "  │                                                             │" -ForegroundColor Yellow
-    Write-Host "  │  Option 2: Try a different region                           │" -ForegroundColor Yellow
-    Write-Host "  │    Some regions have different quota allocations.            │" -ForegroundColor Yellow
-    Write-Host "  └─────────────────────────────────────────────────────────────┘" -ForegroundColor Yellow
-    Write-Host ""
+    Write-Warn "Microsoft.Web provider state: $webProvider — registering now..."
+    az provider register --namespace Microsoft.Web -o none 2>$null
+    Write-Info "  Registration started. It may take a few minutes to complete."
 }
+
+# Check for existing Static Web App in the resource group
+$rgName1 = if ($ResourceGroupName) { $ResourceGroupName } else { 'rg-earthcopilot' }
+$existingSwa = az staticwebapp list --resource-group $rgName1 --query "[0].name" -o tsv 2>$null
+if ($existingSwa) {
+    Write-Pass "Existing Static Web App found: $existingSwa"
+    $swaUrl = az staticwebapp show --name $existingSwa --resource-group $rgName1 --query "defaultHostname" -o tsv 2>$null
+    if ($swaUrl) { Write-Info "  URL: https://$swaUrl" }
+} else {
+    Write-Pass "No existing Static Web App — one will be created during deployment"
+}
+
+Write-Pass "Static Web App readiness confirmed (no VM quota needed)"
 
 # ══════════════════════════════════════════════════════════════════════
 # 8. GITHUB CONFIGURATION
@@ -631,61 +581,36 @@ if ($spList -and $spList.appId) {
 }
 
 # ══════════════════════════════════════════════════════════════════════
-# 10. APP SERVICE NAME UNIQUENESS
+# 10. STATIC WEB APP DISCOVERY & STATUS
 # ══════════════════════════════════════════════════════════════════════
-Write-Section "10/12  App Service Name Uniqueness"
+Write-Section "10/12  Static Web App Discovery"
 
-# The deploy workflow generates a name like: app-earthcopilot-<8-char-hash>
-# Or the user can provide a custom name. Either way, it must be globally unique.
+# The deploy workflow creates a Static Web App named swa-earthcopilot (or discovers existing).
 $rgName2 = if ($ResourceGroupName) { $ResourceGroupName } else { 'rg-earthcopilot' }
-$existingWebApp = az webapp list --resource-group $rgName2 --query "[0].name" -o tsv 2>$null
-if ($existingWebApp) {
-    Write-Pass "Existing Web App found: $existingWebApp (re-deploy will update it)"
-    # Also check the App Service Plan SKU
-    $aspId = az webapp show --name $existingWebApp --resource-group $rgName2 --query "appServicePlanId" -o tsv 2>$null
-    if ($aspId) {
-        $aspName = ($aspId -split '/')[-1]
-        $aspSku = az appservice plan show --ids $aspId --query "sku.name" -o tsv 2>$null
-        if ($aspSku) {
-            Write-Info "  App Service Plan: $aspName (SKU: $aspSku)"
-            if ($aspSku -eq 'F1' -or $aspSku -eq 'D1') {
-                Write-Warn "  Free/Shared SKU does not support VNet integration. Will be upgraded to P1v3 if private endpoints are enabled."
-            }
-        }
-    }
+$existingSwa2 = az staticwebapp list --resource-group $rgName2 --query "[0].{name:name, sku:sku.name, state:contentDistributionEndpoint}" -o json 2>$null | ConvertFrom-Json
+if ($existingSwa2 -and $existingSwa2.name) {
+    Write-Pass "Static Web App found: $($existingSwa2.name) (SKU: $($existingSwa2.sku))"
+    Write-Info "  Re-deploy will update existing Static Web App."
 } else {
-    Write-Pass "No existing Web App — one will be created during deployment"
-    Write-Info "  Name will be auto-generated (globally unique) or provided via web_app_name input."
+    Write-Pass "No existing Static Web App — one will be created during deployment"
+    Write-Info "  Name: swa-earthcopilot (auto-created by deploy workflow)"
 }
 
-# Check if 'express' dependency conflict exists (needed for server.js in deploy)
-Write-Info "  Frontend deployment creates a Node.js Express server at deploy time."
-
 # ══════════════════════════════════════════════════════════════════════
-# 11. VNET SUBNET FOR APP SERVICE (Private Endpoints)
+# 11. VNET SUBNET VALIDATION (Backend Private Endpoints)
 # ══════════════════════════════════════════════════════════════════════
-Write-Section "11/12  VNet Subnet for App Service"
+Write-Section "11/12  VNet Subnet Validation"
 
-# The deploy workflow tries to VNet-integrate the App Service with 'snet-app-service'
-# This subnet must exist in the VNet or the VNet integration step will fail
+# Static Web Apps do NOT require VNet integration or a dedicated subnet.
+# This check validates subnets needed by the backend (Container Apps, private endpoints).
 $rgName3 = if ($ResourceGroupName) { $ResourceGroupName } else { 'rg-earthcopilot' }
 $existingVnet = az network vnet list --resource-group $rgName3 --query "[0].name" -o tsv 2>$null
 if ($existingVnet) {
     Write-Info "  Found VNet: $existingVnet"
     $subnets = az network vnet subnet list --resource-group $rgName3 --vnet-name $existingVnet --query "[].name" -o tsv 2>$null
-    if ($subnets -match 'snet-app-service') {
-        Write-Pass "Subnet 'snet-app-service' exists in VNet (required for frontend VNet integration)"
-    } else {
-        Write-Fail "Subnet 'snet-app-service' NOT found in VNet '$existingVnet'"
-        Write-Info "  The deploy workflow requires this subnet for App Service VNet integration."
-        Write-Info "  Available subnets: $($subnets -join ', ')"
-        Write-Info "  This subnet was recently added to networking.bicep. Re-deploy infrastructure to create it:"
-        Write-Info "    az deployment sub create --location $Location --template-file earth-copilot/infra/main.bicep --parameters earth-copilot/infra/main.parameters.json"
-    }
 
-    # Also check other required subnets
     if ($subnets -match 'snet-container-apps') {
-        Write-Pass "Subnet 'snet-container-apps' exists (backend)"
+        Write-Pass "Subnet 'snet-container-apps' exists (backend Container Apps)"
     } else {
         Write-Warn "Subnet 'snet-container-apps' not found"
     }
@@ -694,6 +619,8 @@ if ($existingVnet) {
     } else {
         Write-Warn "Subnet 'snet-private-endpoints' not found"
     }
+
+    Write-Info "  Note: Frontend (Static Web App) does not require VNet integration."
 } else {
     Write-Info "No VNet found — will be created during infrastructure deployment (if private endpoints enabled)"
     Write-Pass "VNet subnet check skipped (no existing VNet)"

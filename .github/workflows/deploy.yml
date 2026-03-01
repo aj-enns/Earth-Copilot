@@ -8,11 +8,6 @@ on:
         required: false
         default: false
         type: boolean
-      web_app_name:
-        description: 'Web App name (must be globally unique - used in domain name)'
-        required: false
-        default: ''
-        type: string
       disable_auth:
         description: 'Disable Entra ID authentication (app will be publicly accessible — dev/test only)'
         required: false
@@ -134,7 +129,6 @@ jobs:
     outputs:
       container_registry_name: ${{ steps.discover.outputs.container_registry_name }}
       container_app_name: ${{ steps.discover.outputs.container_app_name }}
-      web_app_name: ${{ steps.discover.outputs.web_app_name }}
       container_app_url: ${{ steps.discover.outputs.container_app_url }}
     steps:
       - name: Checkout repository
@@ -187,11 +181,6 @@ jobs:
           CA_NAME=$(az containerapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].name" -o tsv)
           echo "container_app_name=$CA_NAME" >> $GITHUB_OUTPUT
           echo "  Container App: $CA_NAME"
-          
-          # Discover Web App
-          WA_NAME=$(az webapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].name" -o tsv)
-          echo "web_app_name=$WA_NAME" >> $GITHUB_OUTPUT
-          echo "  Web App: $WA_NAME"
           
           # Get Container App URL
           if [ -n "$CA_NAME" ]; then
@@ -548,7 +537,7 @@ jobs:
           echo "container_app_url=https://$CONTAINER_APP_URL" >> $GITHUB_OUTPUT
           echo "Backend deployed to: https://$CONTAINER_APP_URL"
 
-  # Deploy Frontend (if frontend files changed, runs after backend)
+  # Deploy Frontend via Azure Static Web Apps (no App Service VM quota needed)
   deploy-frontend:
     name: Deploy Frontend
     needs: [detect-changes, deploy-infrastructure, deploy-backend]
@@ -560,8 +549,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment_name }}
     outputs:
-      web_app_name: ${{ steps.discover.outputs.web_app_name }}
-      web_app_url: ${{ steps.deploy.outputs.web_app_url }}
+      web_app_name: ${{ steps.deploy.outputs.static_web_app_name }}
+      web_app_url: ${{ steps.deploy.outputs.static_web_app_url }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -578,43 +567,14 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Discover Resource Names
-        id: discover
+      - name: Get Backend URL
+        id: get-backend-url
         run: |
-          echo "Discovering resource names..."
-          
-          # Discover Container App
           CA_NAME=$(az containerapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].name" -o tsv)
           if [ -z "$CA_NAME" ]; then
             echo "ERROR: No Container App found in ${{ env.RESOURCE_GROUP }}"
             exit 1
           fi
-          echo "container_app_name=$CA_NAME" >> $GITHUB_OUTPUT
-          echo "  Container App: $CA_NAME"
-          
-          # Discover or create Web App
-          WA_NAME=$(az webapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].name" -o tsv)
-          if [ -z "$WA_NAME" ]; then
-            echo "  INFO: No Web App found - will create one"
-            echo "web_app_exists=false" >> $GITHUB_OUTPUT
-            # Use user-provided name or generate a unique default
-            WA_NAME="${{ github.event.inputs.web_app_name }}"
-            if [ -z "$WA_NAME" ]; then
-              # Generate unique name using resource group hash to avoid global conflicts
-              UNIQUE_SUFFIX=$(echo -n "${{ env.RESOURCE_GROUP }}-${{ github.repository }}" | md5sum | cut -c1-8)
-              WA_NAME="app-${{ env.PROJECT_NAME }}-${UNIQUE_SUFFIX}"
-              echo "  Generated unique Web App name: $WA_NAME"
-            fi
-          else
-            echo "web_app_exists=true" >> $GITHUB_OUTPUT
-            echo "  Web App: $WA_NAME"
-          fi
-          echo "web_app_name=$WA_NAME" >> $GITHUB_OUTPUT
-
-      - name: Get Backend URL
-        id: get-backend-url
-        run: |
-          CA_NAME="${{ steps.discover.outputs.container_app_name }}"
           CONTAINER_APP_URL=$(az containerapp show \
             --name "$CA_NAME" \
             --resource-group ${{ env.RESOURCE_GROUP }} \
@@ -625,7 +585,6 @@ jobs:
       - name: Get Azure Maps Key
         id: get-maps-key
         run: |
-          # Find Azure Maps account in resource group
           MAPS_ACCOUNT=$(az maps account list \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --query "[0].name" -o tsv)
@@ -642,137 +601,64 @@ jobs:
             echo "maps_key=" >> $GITHUB_OUTPUT
           fi
 
-      - name: Build and Deploy Frontend
-        id: deploy
+      - name: Build Frontend
         run: |
-          echo "Building and deploying frontend..."
-          
-          WA_NAME="${{ steps.discover.outputs.web_app_name }}"
-          WA_EXISTS="${{ steps.discover.outputs.web_app_exists }}"
-          # Private endpoints are ON by default; only disabled if user explicitly checks disable_private_endpoints
-          if [ "${{ github.event.inputs.disable_private_endpoints }}" == "true" ]; then
-            ENABLE_PE="false"
-          else
-            ENABLE_PE="true"
-          fi
-          
-          # P1v3 used for all scenarios (subscription has Premium v3 quota only)
-          SKU="P1v3"
-          echo "  Using P1v3 SKU (Premium v3)"
-          
-          # Create Web App if it doesn't exist
-          if [ "$WA_EXISTS" != "true" ]; then
-            echo "Creating new Web App..."
-            
-            # Create App Service Plan
-            ASP_NAME="asp-${{ env.PROJECT_NAME }}"
-            az appservice plan create \
-              --name "$ASP_NAME" \
-              --resource-group "${{ env.RESOURCE_GROUP }}" \
-              --location "${{ env.LOCATION }}" \
-              --sku "$SKU" \
-              --is-linux \
-              --output none
-            
-            echo "  Created App Service Plan: $ASP_NAME (SKU: $SKU)"
-            
-            # Create Web App
-            az webapp create \
-              --name "$WA_NAME" \
-              --resource-group "${{ env.RESOURCE_GROUP }}" \
-              --plan "$ASP_NAME" \
-              --runtime "NODE:20-lts" \
-              --output none
-            
-            echo "  Created Web App: $WA_NAME"
-            
-            # Configure Web App
-            az webapp config appsettings set \
-              --name "$WA_NAME" \
-              --resource-group "${{ env.RESOURCE_GROUP }}" \
-              --settings \
-                SCM_DO_BUILD_DURING_DEPLOYMENT=false \
-                WEBSITE_NODE_DEFAULT_VERSION=~20 \
-                VITE_API_BASE_URL="${{ steps.get-backend-url.outputs.backend_url }}" \
-                PORT=8080 \
-              --output none
-            
-            echo "  Configured Web App settings"
-          else
-            # If PE enabled and app already exists, upgrade to S1 if needed
-            if [ "$ENABLE_PE" == "true" ]; then
-              ASP_NAME=$(az webapp show --name "$WA_NAME" --resource-group "${{ env.RESOURCE_GROUP }}" \
-                --query "appServicePlanId" -o tsv | xargs -I{} basename {})
-              CURRENT_SKU=$(az appservice plan show --name "$ASP_NAME" --resource-group "${{ env.RESOURCE_GROUP }}" \
-                --query "sku.name" -o tsv)
-              if [ "$CURRENT_SKU" != "P1v3" ]; then
-                echo "  Upgrading App Service Plan to P1v3 for VNet integration..."
-                az appservice plan update \
-                  --name "$ASP_NAME" \
-                  --resource-group "${{ env.RESOURCE_GROUP }}" \
-                  --sku P1v3 \
-                  --output none
-              fi
-            fi
-          fi
-          
-          # Add VNet integration if private endpoints are enabled
-          if [ "$ENABLE_PE" == "true" ]; then
-            VNET_NAME=$(az network vnet list --resource-group "${{ env.RESOURCE_GROUP }}" \
-              --query "[0].name" -o tsv)
-            if [ -n "$VNET_NAME" ]; then
-              echo "  Adding VNet integration (subnet: snet-app-service)..."
-              az webapp vnet-integration add \
-                --name "$WA_NAME" \
-                --resource-group "${{ env.RESOURCE_GROUP }}" \
-                --vnet "$VNET_NAME" \
-                --subnet "snet-app-service" \
-                --output none 2>/dev/null || echo "  VNet integration already configured"
-            fi
-          fi
-          
           cd earth-copilot/web-ui
-          
-          # Install and build with environment variables
           npm ci
           VITE_API_BASE_URL="${{ steps.get-backend-url.outputs.backend_url }}" \
           VITE_AZURE_MAPS_SUBSCRIPTION_KEY="${{ steps.get-maps-key.outputs.maps_key }}" \
           npm run build
+
+      - name: Create or Discover Static Web App
+        id: deploy
+        run: |
+          echo "Deploying frontend as Azure Static Web App..."
           
-          # Create server for App Service
-          cat > dist/server.js << 'EOF'
-          const express = require('express');
-          const path = require('path');
-          const app = express();
-          const port = process.env.PORT || 8080;
-          app.use(express.static(__dirname));
-          app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-          app.listen(port, () => console.log('Server running on port ' + port));
-          EOF
+          SWA_NAME="swa-${{ env.PROJECT_NAME }}"
           
-          cat > dist/package.json << 'EOF'
-          {"name":"earth-copilot-ui","version":"1.0.0","main":"server.js","scripts":{"start":"node server.js"},"dependencies":{"express":"^4.18.0"}}
-          EOF
+          # Check if SWA already exists
+          SWA_EXISTS=$(az staticwebapp list --resource-group ${{ env.RESOURCE_GROUP }} \
+            --query "[?name=='$SWA_NAME'].name" -o tsv 2>/dev/null || true)
           
-          cd dist
-          npm install --production
-          zip -r ../deploy.zip .
-          cd ..
+          if [ -z "$SWA_EXISTS" ]; then
+            echo "Creating Static Web App: $SWA_NAME"
+            az staticwebapp create \
+              --name "$SWA_NAME" \
+              --resource-group "${{ env.RESOURCE_GROUP }}" \
+              --location "${{ env.LOCATION }}" \
+              --sku Free \
+              --output none
+            echo "  Created Static Web App: $SWA_NAME"
+          else
+            echo "  Static Web App already exists: $SWA_NAME"
+          fi
           
-          # Deploy to App Service
-          az webapp deploy \
+          # Get deployment token
+          DEPLOYMENT_TOKEN=$(az staticwebapp secrets list \
+            --name "$SWA_NAME" \
             --resource-group "${{ env.RESOURCE_GROUP }}" \
-            --name "$WA_NAME" \
-            --src-path deploy.zip \
-            --type zip
+            --query "properties.apiKey" -o tsv)
           
-          WEB_URL=$(az webapp show \
+          echo "deployment_token=$DEPLOYMENT_TOKEN" >> $GITHUB_OUTPUT
+          echo "static_web_app_name=$SWA_NAME" >> $GITHUB_OUTPUT
+          
+          # Get the URL
+          SWA_URL=$(az staticwebapp show \
+            --name "$SWA_NAME" \
             --resource-group "${{ env.RESOURCE_GROUP }}" \
-            --name "$WA_NAME" \
-            --query "defaultHostName" -o tsv)
-          
-          echo "web_app_url=https://$WEB_URL" >> $GITHUB_OUTPUT
-          echo "Frontend deployed to: https://$WEB_URL"
+            --query "defaultHostname" -o tsv)
+          echo "static_web_app_url=https://$SWA_URL" >> $GITHUB_OUTPUT
+          echo "  Static Web App URL: https://$SWA_URL"
+
+      - name: Deploy to Static Web App
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ steps.deploy.outputs.deployment_token }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: "upload"
+          app_location: "earth-copilot/web-ui/dist"
+          skip_app_build: true
+          skip_api_build: true
 
   # Enable Azure AI Agent Service (required for GEOINT agents)
   # -----------------------------------------------------------------------------
@@ -1035,18 +921,18 @@ jobs:
         run: |
           set -euo pipefail
 
-          # -- Discover Web App --
-          WA_NAME=$(az webapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].name" -o tsv)
-          if [ -z "$WA_NAME" ]; then
-            echo "ERROR: No Web App found in ${{ env.RESOURCE_GROUP }}"
+          # -- Discover Static Web App --
+          SWA_NAME=$(az staticwebapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].name" -o tsv)
+          if [ -z "$SWA_NAME" ]; then
+            echo "ERROR: No Static Web App found in ${{ env.RESOURCE_GROUP }}"
             exit 1
           fi
 
-          WEB_URL="https://$(az webapp show --name "$WA_NAME" --resource-group ${{ env.RESOURCE_GROUP }} --query defaultHostName -o tsv)"
+          WEB_URL="https://$(az staticwebapp show --name "$SWA_NAME" --resource-group ${{ env.RESOURCE_GROUP }} --query defaultHostname -o tsv)"
           REDIRECT_URI="${WEB_URL}/.auth/login/aad/callback"
           TENANT_ID=$(az account show --query tenantId -o tsv)
 
-          echo "Web App: $WA_NAME"
+          echo "Static Web App: $SWA_NAME"
           echo "URL: $WEB_URL"
           echo "Tenant: $TENANT_ID"
 
@@ -1090,7 +976,7 @@ jobs:
               echo "    -> az ad app permission admin-consent --id <SP_APP_ID>"
               echo ""
               echo "  Option 3: Run the local script instead"
-              echo "    -> .\\scripts\\enable-webapp-auth.ps1 -ResourceGroupName ${{ env.RESOURCE_GROUP }} -WebAppName $WA_NAME"
+              echo "    -> .\\scripts\\enable-webapp-auth.ps1 -ResourceGroupName ${{ env.RESOURCE_GROUP }}"
               echo "================================================================="
               echo ""
               echo "Deployment succeeded — app is accessible at: $WEB_URL (without auth)"
@@ -1129,72 +1015,18 @@ jobs:
             echo "Service principal exists: $SP_ID"
           fi
 
-          # -- Configure EasyAuth on the Web App --
-          az webapp auth update \
-            --name "$WA_NAME" \
-            --resource-group ${{ env.RESOURCE_GROUP }} \
-            --enabled true \
-            --action LoginWithAzureActiveDirectory \
-            --aad-allowed-token-audiences "api://$CLIENT_ID" \
-            --aad-client-id "$CLIENT_ID" \
-            --aad-token-issuer-url "https://sts.windows.net/$TENANT_ID/" \
-            --output none 2>/dev/null || {
-            echo "WARNING: Could not configure EasyAuth on Web App"
-            echo "You may need to configure authentication manually in the Azure Portal."
-            echo "Deployment succeeded — app is accessible at: $WEB_URL"
-            exit 0
-          }
-          echo "EasyAuth configured (redirect to login)"
-
-          # -- Restrict access to assigned users only (only when AUTH_AUTHORIZED_USERS is set) --
-          if [ -z "$AUTH_AUTHORIZED_USERS" ]; then
-            echo "No AUTH_AUTHORIZED_USERS configured — all tenant users can access the app"
-            # Don't set appRoleAssignmentRequired=true when no users are listed,
-            # otherwise everyone gets blocked (AADSTS50105).
-          else
-            az ad sp update --id "$SP_ID" --set appRoleAssignmentRequired=true 2>/dev/null || \
-              echo "WARNING: Could not set appRoleAssignmentRequired (SP may lack permission)"
-
-          # -- Assign authorized users --
-            ASSIGNED=0
-            SKIPPED=0
-            DEFAULT_ROLE_ID="00000000-0000-0000-0000-000000000000"
-
-            IFS=',' read -ra USERS <<< "$AUTH_AUTHORIZED_USERS"
-            for EMAIL in "${USERS[@]}"; do
-              EMAIL=$(echo "$EMAIL" | xargs)  # trim whitespace
-              [ -z "$EMAIL" ] && continue
-
-              USER_ID=$(az ad user show --id "$EMAIL" --query id -o tsv 2>/dev/null || true)
-              if [ -z "$USER_ID" ]; then
-                echo "WARNING: User not found: $EMAIL (not in tenant — invite as B2B guest first)"
-                continue
-              fi
-
-              # Check if already assigned
-              EXISTING=$(az rest --method GET \
-                --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$SP_ID/appRoleAssignedTo" \
-                --query "value[?principalId=='$USER_ID'] | length(@)" -o tsv 2>/dev/null || echo "0")
-
-              if [ "$EXISTING" != "0" ]; then
-                echo "Already assigned: $EMAIL"
-                SKIPPED=$((SKIPPED + 1))
-                continue
-              fi
-
-              az rest --method POST \
-                --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$SP_ID/appRoleAssignedTo" \
-                --headers "Content-Type=application/json" \
-                --body "{\"principalId\": \"$USER_ID\", \"resourceId\": \"$SP_ID\", \"appRoleId\": \"$DEFAULT_ROLE_ID\"}" \
-                --output none 2>/dev/null || { echo "WARNING: Could not assign $EMAIL"; continue; }
-              echo "Assigned: $EMAIL"
-              ASSIGNED=$((ASSIGNED + 1))
-            done
-            echo "User assignment complete: $ASSIGNED new, $SKIPPED already assigned"
-          fi
-
+          # -- Configure EasyAuth on the Static Web App --
+          # SWA auth is configured via staticwebapp.config.json in the app source.
+          # For Entra ID, we register the app and output instructions.
+          echo "NOTE: Static Web Apps use staticwebapp.config.json for auth configuration."
+          echo "To enable Entra ID auth, add an 'auth' section to staticwebapp.config.json"
+          echo "or configure it in the Azure Portal under the Static Web App's Authentication settings."
           echo ""
-          echo "Authentication configured successfully"
+          echo "App Registration Client ID: $CLIENT_ID"
+          echo "Tenant ID: $TENANT_ID"
+          echo "Redirect URI: $REDIRECT_URI"
+          echo ""
+          echo "Authentication app registration ready"
           echo "URL: $WEB_URL"
           echo "auth_configured=true" >> $GITHUB_OUTPUT
 
@@ -1260,12 +1092,12 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           
           # Discover actual resource names and URLs
-          WA_NAME=$(az webapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].name" -o tsv 2>/dev/null || echo "")
+          SWA_NAME=$(az staticwebapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].name" -o tsv 2>/dev/null || echo "")
           CA_NAME=$(az containerapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[0].name" -o tsv 2>/dev/null || echo "")
           
-          if [ -n "$WA_NAME" ]; then
-            WEB_URL=$(az webapp show --resource-group ${{ env.RESOURCE_GROUP }} --name "$WA_NAME" --query "defaultHostName" -o tsv)
-            echo "- **Frontend**: https://$WEB_URL" >> $GITHUB_STEP_SUMMARY
+          if [ -n "$SWA_NAME" ]; then
+            WEB_URL=$(az staticwebapp show --name "$SWA_NAME" --resource-group ${{ env.RESOURCE_GROUP }} --query "defaultHostname" -o tsv)
+            echo "- **Frontend (SWA)**: https://$WEB_URL" >> $GITHUB_STEP_SUMMARY
           else
             echo "- **Frontend**: Not deployed yet" >> $GITHUB_STEP_SUMMARY
           fi

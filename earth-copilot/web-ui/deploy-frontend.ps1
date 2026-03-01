@@ -1,5 +1,5 @@
 # Earth Copilot Frontend Deployment Script
-# Deploys the React web UI to Azure App Service
+# Deploys the React web UI to Azure Static Web Apps
 # Auto-discovers resources from Azure subscription
 
 param(
@@ -7,7 +7,7 @@ param(
     [string]$ResourceGroup = "",
     
     [Parameter(Mandatory=$false)]
-    [string]$AppServiceName = "",
+    [string]$StaticWebAppName = "",
     
     [Parameter(Mandatory=$false)]
     [switch]$SkipBuild = $false,
@@ -20,6 +20,7 @@ $ErrorActionPreference = "Stop"
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "EARTH COPILOT FRONTEND DEPLOYMENT" -ForegroundColor Cyan
+Write-Host "(Azure Static Web Apps)" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -66,7 +67,6 @@ Write-Host "[Discovering Azure Resources]" -ForegroundColor Cyan
 if ([string]::IsNullOrEmpty($ResourceGroup)) {
     Write-Host "   Looking for Earth Copilot resource group..." -ForegroundColor Gray
     
-    # Try to find resource group with earthcopilot in the name
     $groups = az group list --query "[?contains(name, 'earthcopilot') || contains(name, 'earth-copilot')].name" -o tsv 2>$null
     
     if ($groups) {
@@ -81,42 +81,45 @@ if ([string]::IsNullOrEmpty($ResourceGroup)) {
     Write-Host "[OK] Using provided resource group: $ResourceGroup" -ForegroundColor Green
 }
 
-# Find App Service if not provided
-if ([string]::IsNullOrEmpty($AppServiceName)) {
-    Write-Host "   Looking for App Service in $ResourceGroup..." -ForegroundColor Gray
+# Find or create Static Web App
+if ([string]::IsNullOrEmpty($StaticWebAppName)) {
+    Write-Host "   Looking for Static Web App in $ResourceGroup..." -ForegroundColor Gray
     
-    # Get all App Services in the resource group
-    $appServices = az webapp list --resource-group $ResourceGroup --query "[].name" -o tsv 2>$null
+    $swaList = az staticwebapp list --resource-group $ResourceGroup --query "[0].name" -o tsv 2>$null
     
-    if ($appServices) {
-        $AppServiceName = ($appServices -split "`n")[0].Trim()
-        Write-Host "[OK] Found App Service: $AppServiceName" -ForegroundColor Green
+    if ($swaList) {
+        $StaticWebAppName = $swaList.Trim()
+        Write-Host "[OK] Found Static Web App: $StaticWebAppName" -ForegroundColor Green
     } else {
-        Write-Host "[ERROR] Could not find App Service in resource group '$ResourceGroup'." -ForegroundColor Red
-        Write-Host "   Please specify -AppServiceName parameter or deploy infrastructure first." -ForegroundColor Yellow
-        exit 1
+        # Create one
+        $StaticWebAppName = "swa-earthcopilot"
+        Write-Host "[INFO] No Static Web App found. Creating: $StaticWebAppName" -ForegroundColor Yellow
+        $location = (az group show --name $ResourceGroup --query "location" -o tsv 2>$null).Trim()
+        az staticwebapp create --name $StaticWebAppName --resource-group $ResourceGroup --location $location --sku Free -o none
+        Write-Host "[OK] Created Static Web App: $StaticWebAppName" -ForegroundColor Green
     }
 } else {
-    Write-Host "[OK] Using provided App Service: $AppServiceName" -ForegroundColor Green
+    Write-Host "[OK] Using provided Static Web App: $StaticWebAppName" -ForegroundColor Green
 }
 
-# Verify App Service exists and get details
+# Get deployment token
 Write-Host ""
-Write-Host "[Verifying Azure App Service]" -ForegroundColor Cyan
-try {
-    $appService = az webapp show --name $AppServiceName --resource-group $ResourceGroup 2>$null | ConvertFrom-Json
-    Write-Host "[OK] App Service found: $($appService.defaultHostName)" -ForegroundColor Green
-} catch {
-    Write-Host "[ERROR] App Service '$AppServiceName' not found in resource group '$ResourceGroup'" -ForegroundColor Red
-    Write-Host "   Please verify the resource exists or update the parameters." -ForegroundColor Yellow
+Write-Host "[Getting deployment token]" -ForegroundColor Cyan
+$deploymentToken = az staticwebapp secrets list --name $StaticWebAppName --resource-group $ResourceGroup --query "properties.apiKey" -o tsv 2>$null
+if ([string]::IsNullOrEmpty($deploymentToken)) {
+    Write-Host "[ERROR] Could not retrieve deployment token for Static Web App '$StaticWebAppName'" -ForegroundColor Red
     exit 1
 }
+Write-Host "[OK] Deployment token retrieved" -ForegroundColor Green
+
+# Get SWA URL
+$swaHostname = az staticwebapp show --name $StaticWebAppName --resource-group $ResourceGroup --query "defaultHostname" -o tsv 2>$null
 
 if (-not $SkipBuild) {
     # Install dependencies
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host "STEP 1/4: Installing Dependencies" -ForegroundColor Cyan
+    Write-Host "STEP 1/3: Installing Dependencies" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
     Push-Location $ScriptDir
     try {
@@ -134,7 +137,7 @@ if (-not $SkipBuild) {
     # Build the application
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host "STEP 2/4: Building Production Bundle" -ForegroundColor Cyan
+    Write-Host "STEP 2/3: Building Production Bundle" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host "This may take 2-3 minutes..." -ForegroundColor Yellow
     Write-Host ""
@@ -162,76 +165,55 @@ if (-not $SkipBuild) {
     Write-Host "[SKIP] Skipping build (using existing dist folder)" -ForegroundColor Yellow
 }
 
-# Create deployment package
+# Deploy to Azure Static Web Apps using SWA CLI
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "STEP 3/4: Creating Deployment Package" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-$zipPath = "$ScriptDir\deploy.zip"
-if (Test-Path $zipPath) {
-    Remove-Item $zipPath -Force
-}
-
-try {
-    Compress-Archive -Path "$ScriptDir\dist\*" -DestinationPath $zipPath -Force
-    $zipSize = (Get-Item $zipPath).Length / 1MB
-    Write-Host "[OK] Deployment package created: $([math]::Round($zipSize, 2)) MB" -ForegroundColor Green
-} catch {
-    Write-Host "[ERROR] Failed to create deployment package: $_" -ForegroundColor Red
-    exit 1
-}
-
-# Deploy to Azure
-Write-Host ""
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "STEP 4/4: Deploying to Azure App Service" -ForegroundColor Cyan
+Write-Host "STEP 3/3: Deploying to Static Web App" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "   Resource Group: $ResourceGroup" -ForegroundColor Gray
-Write-Host "   App Service: $AppServiceName" -ForegroundColor Gray
-Write-Host "   This may take 1-2 minutes..." -ForegroundColor Yellow
+Write-Host "   Static Web App: $StaticWebAppName" -ForegroundColor Gray
 Write-Host ""
 
-try {
-    az webapp deploy `
-        --resource-group $ResourceGroup `
-        --name $AppServiceName `
-        --src-path $zipPath `
-        --type zip `
-        --output none
-    
+# Check if swa CLI is available, install if not
+$swaCmd = Get-Command swa -ErrorAction SilentlyContinue
+if (-not $swaCmd) {
+    Write-Host "[INFO] Installing SWA CLI..." -ForegroundColor Yellow
+    npm install -g @azure/static-web-apps-cli
     if ($LASTEXITCODE -ne 0) {
-        throw "Deployment failed"
+        Write-Host "[ERROR] Failed to install SWA CLI" -ForegroundColor Red
+        exit 1
     }
-    
+}
+
+try {
+    swa deploy "$ScriptDir\dist" `
+        --deployment-token $deploymentToken `
+        --env production
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "SWA deployment failed"
+    }
+
     Write-Host ""
     Write-Host "[OK] Deployment completed successfully!" -ForegroundColor Green
-    
-    # Clean up deployment package
-    Remove-Item $zipPath -Force
-    Write-Host "[CLEAN] Cleaned up deployment package" -ForegroundColor Gray
-    
 } catch {
     Write-Host "[ERROR] Deployment failed: $_" -ForegroundColor Red
     exit 1
 }
 
-# Wait for deployment to stabilize
-Write-Host ""
-Write-Host "[Waiting for deployment to stabilize (15 seconds)]" -ForegroundColor Yellow
-Start-Sleep -Seconds 15
-
 # Health check
 Write-Host ""
 Write-Host "[Performing health check]" -ForegroundColor Cyan
+Start-Sleep -Seconds 10
 try {
-    $response = Invoke-WebRequest -Uri "https://$($appService.defaultHostName)" -Method GET -UseBasicParsing -ErrorAction Stop
+    $response = Invoke-WebRequest -Uri "https://$swaHostname" -Method GET -UseBasicParsing -ErrorAction Stop
     if ($response.StatusCode -eq 200) {
         Write-Host "[OK] Health check PASSED - Frontend is responding" -ForegroundColor Green
     } else {
         Write-Host "[WARN] Health check returned status: $($response.StatusCode)" -ForegroundColor Yellow
     }
 } catch {
-    Write-Host "[WARN] Health check failed - Frontend may still be starting up" -ForegroundColor Yellow
+    Write-Host "[WARN] Health check failed - Frontend may still be propagating" -ForegroundColor Yellow
     Write-Host "   Error: $_" -ForegroundColor Gray
 }
 
@@ -240,6 +222,5 @@ Write-Host "========================================" -ForegroundColor Green
 Write-Host "FRONTEND DEPLOYMENT COMPLETE!" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "Frontend URL: https://$($appService.defaultHostName)" -ForegroundColor Cyan
-Write-Host "View logs: az webapp log tail --name $AppServiceName --resource-group $ResourceGroup" -ForegroundColor Gray
+Write-Host "Frontend URL: https://$swaHostname" -ForegroundColor Cyan
 Write-Host ""

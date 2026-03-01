@@ -1,5 +1,5 @@
 # Earth Copilot Master Deployment Script
-# Deploys both backend (Container App) and frontend (App Service) to Azure
+# Deploys both backend (Container App) and frontend (Static Web App) to Azure
 # Auto-discovers resources from Azure subscription
 
 param(
@@ -10,7 +10,7 @@ param(
     [string]$ContainerAppName = "",
     
     [Parameter(Mandatory=$false)]
-    [string]$AppServiceName = "",
+    [string]$StaticWebAppName = "",
     
     [Parameter(Mandatory=$false)]
     [string]$Registry = "",
@@ -116,23 +116,23 @@ if ([string]::IsNullOrEmpty($ContainerAppName)) {
     Write-Host "[OK] Using provided Container App: $ContainerAppName" -ForegroundColor Green
 }
 
-# Find App Service if not provided
-if ([string]::IsNullOrEmpty($AppServiceName)) {
-    Write-Host "   Looking for App Service in $ResourceGroup..." -ForegroundColor Gray
+# Find Static Web App if not provided
+if ([string]::IsNullOrEmpty($StaticWebAppName)) {
+    Write-Host "   Looking for Static Web App in $ResourceGroup..." -ForegroundColor Gray
     
-    $appServices = az webapp list --resource-group $ResourceGroup --query "[].name" -o tsv 2>$null
+    $swaList = az staticwebapp list --resource-group $ResourceGroup --query "[0].name" -o tsv 2>$null
     
-    if ($appServices) {
-        $AppServiceName = ($appServices -split "`n")[0].Trim()
-        Write-Host "[OK] Found App Service: $AppServiceName" -ForegroundColor Green
+    if ($swaList) {
+        $StaticWebAppName = $swaList.Trim()
+        Write-Host "[OK] Found Static Web App: $StaticWebAppName" -ForegroundColor Green
     } else {
-        Write-Host "[WARN] Could not find App Service in resource group '$ResourceGroup'." -ForegroundColor Yellow
+        Write-Host "[WARN] Could not find Static Web App in resource group '$ResourceGroup'." -ForegroundColor Yellow
         if ($Target -eq "frontend" -or $Target -eq "both") {
-            Write-Host "   Frontend deployment will fail without App Service." -ForegroundColor Yellow
+            Write-Host "   Frontend deployment will create a new Static Web App." -ForegroundColor Yellow
         }
     }
 } else {
-    Write-Host "[OK] Using provided App Service: $AppServiceName" -ForegroundColor Green
+    Write-Host "[OK] Using provided Static Web App: $StaticWebAppName" -ForegroundColor Green
 }
 
 # Find Container Registry if not provided
@@ -159,7 +159,7 @@ Write-Host " Deployment Configuration:" -ForegroundColor Yellow
 Write-Host "   Target: $Target" -ForegroundColor Gray
 Write-Host "   Resource Group: $ResourceGroup" -ForegroundColor Gray
 Write-Host "   Backend: $ContainerAppName [Container App]" -ForegroundColor Gray
-Write-Host "   Frontend: $AppServiceName [App Service]" -ForegroundColor Gray
+Write-Host "   Frontend: $StaticWebAppName [Static Web App]" -ForegroundColor Gray
 Write-Host "   Registry: $Registry.azurecr.io" -ForegroundColor Gray
 Write-Host ""
 Write-Host "[TIME]  Started at: $(Get-Date -Format 'HH:mm:ss')" -ForegroundColor Gray
@@ -181,7 +181,7 @@ if ($deployBackend) {
     Write-Host "   [FAIL] Backend [skipped]" -ForegroundColor Gray
 }
 if ($deployFrontend) {
-    Write-Host "   [OK] Frontend [App Service]" -ForegroundColor Green
+    Write-Host "   [OK] Frontend [Static Web App]" -ForegroundColor Green
 } else {
     Write-Host "   [FAIL] Frontend [skipped]" -ForegroundColor Gray
 }
@@ -264,7 +264,7 @@ if ($deployFrontend) {
     try {
         $params = @{
             ResourceGroup = $ResourceGroup
-            AppServiceName = $AppServiceName
+            StaticWebAppName = $StaticWebAppName
         }
         
         if ($SkipBuild) {
@@ -340,12 +340,12 @@ if ($deployFrontend) {
         Write-Host "[OK] Frontend: DEPLOYED" -ForegroundColor Green
         
         try {
-            $appService = az webapp show `
-                --name $AppServiceName `
+            $swaDetails = az staticwebapp show `
+                --name $StaticWebAppName `
                 --resource-group $ResourceGroup `
                 --output json | ConvertFrom-Json
             
-            Write-Host "    URL: https://$($appService.defaultHostName)" -ForegroundColor Cyan
+            Write-Host "    URL: https://$($swaDetails.defaultHostname)" -ForegroundColor Cyan
         } catch {
             Write-Host "   [WARN]  Could not retrieve frontend URL" -ForegroundColor Yellow
         }
