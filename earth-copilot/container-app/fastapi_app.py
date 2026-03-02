@@ -1281,11 +1281,19 @@ def build_stac_query(stac_params: Dict[str, Any]) -> Dict[str, Any]:
     if stac_params.get('collections'):
         query['collections'] = stac_params['collections']
     
+    # Detect static DEM collections that should NOT have temporal filters
+    static_collections = {"cop-dem-glo-30", "cop-dem-glo-90", "3dep-seamless", "alos-dem", "nasadem"}
+    collections_list = stac_params.get('collections', [])
+    all_static = collections_list and all(c in static_collections for c in collections_list)
+    
     # Add temporal filter for ALL collections (including MODIS)
     # MODIS items use start_datetime/end_datetime but STAC API filters correctly
-    if stac_params.get('datetime'):
+    # BUT: Skip datetime for static DEM collections (they are timeless)
+    if stac_params.get('datetime') and not all_static:
         query['datetime'] = stac_params['datetime']
         logger.info(f"[DATE] Adding datetime filter to STAC query: {stac_params['datetime']}")
+    elif all_static:
+        logger.info(f"[DATE] Skipping datetime filter for static DEM collections: {collections_list}")
     
     # Add spatial filter (bbox) - required for MODIS!
     if stac_params.get('bbox'):
@@ -1297,7 +1305,10 @@ def build_stac_query(stac_params: Dict[str, Any]) -> Dict[str, Any]:
     
     # Add sortby - CRITICAL for getting most recent imagery when no datetime filter
     # Without this, STAC API returns results in undefined order (often oldest first)
-    if stac_params.get('sortby'):
+    # BUT: Skip datetime-based sorting for static DEM collections
+    if all_static:
+        logger.info(f"[CHART] Skipping sortby for static DEM collections (no datetime field)")
+    elif stac_params.get('sortby'):
         query['sortby'] = stac_params['sortby']
         logger.info(f"[CHART] Adding sortby to STAC query: {stac_params['sortby']}")
     else:

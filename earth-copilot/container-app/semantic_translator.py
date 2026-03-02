@@ -2179,6 +2179,16 @@ Format: ["collection-id"]"""
             "extreme weather": ["nasa-nex-gddp-cmip6"],
             "climate scenario": ["nasa-nex-gddp-cmip6"],
             
+            # Humanitarian / aid / convoy / route assessment
+            "humanitarian": ["sentinel-2-l2a"],
+            "convoy": ["sentinel-2-l2a"],
+            "aid convoy": ["sentinel-2-l2a"],
+            "route condition": ["sentinel-2-l2a"],
+            "route assessment": ["sentinel-2-l2a"],
+            "disaster response": ["sentinel-2-l2a"],
+            "disaster relief": ["sentinel-2-l2a"],
+            "refugee": ["sentinel-2-l2a"],
+            
             # Generic imagery defaults
             "satellite imagery": ["sentinel-2-l2a"],
             "satellite images": ["sentinel-2-l2a"],
@@ -8478,12 +8488,12 @@ If NOT GEOINT (regular map/satellite data request):
         """
         collection_mapping = {
             'terrain_analysis': ['cop-dem-glo-30', 'nasadem', 'cop-dem-glo-90'],
-            'mobility_analysis': ['cop-dem-glo-30', 'sentinel-1-grd', 'landsat-c2-l2'],
+            'mobility_analysis': ['sentinel-2-l2a', 'sentinel-1-grd', 'cop-dem-glo-30'],
             'line_of_sight': ['cop-dem-glo-30', 'nasadem'],
             'elevation_profile': ['cop-dem-glo-30', 'nasadem', 'cop-dem-glo-90']
         }
         
-        return collection_mapping.get(analysis_type, ['cop-dem-glo-30'])
+        return collection_mapping.get(analysis_type, ['sentinel-2-l2a'])
 
 
 # =============================================================================
