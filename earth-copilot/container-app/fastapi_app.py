@@ -2579,7 +2579,8 @@ async def unified_query_processor(request: Request):
                             logger.debug("[PIN] No session context available (router_agent.tools.session_contexts not found)")
                     
                     # If router explicitly said use_current_location, prioritize it
-                    if router_action and router_action.get("use_current_location"):
+                    use_current_location = router_action and router_action.get("use_current_location")
+                    if use_current_location:
                         logger.info(f"[PIN] Router set use_current_location=True")
                     
                     logger.info("[SYNC] Translating natural language to STAC parameters...")
@@ -2628,6 +2629,22 @@ async def unified_query_processor(request: Request):
                     else:
                         # Use the semantic translator's translate_query method with pin and session_bbox fallback
                         stac_params = await translator.translate_query(natural_query, pin_location=pin, session_bbox=session_bbox)
+                    
+                    # ========================================================================
+                    # [PIN] USE_CURRENT_LOCATION OVERRIDE: Force session bbox for follow-ups
+                    # ========================================================================
+                    # When the router determined this is a follow-up query at the current
+                    # location (use_current_location=True), override whatever bbox the
+                    # translator produced. This prevents the LLM from hallucinating a
+                    # location from contextual keywords (e.g., "fire hazards" -> SoCal).
+                    # The session bbox is the user's actual current map position.
+                    # ========================================================================
+                    if use_current_location and session_bbox and stac_params and not stac_params.get('error'):
+                        translated_bbox = stac_params.get('bbox')
+                        if translated_bbox != session_bbox:
+                            logger.info(f"[PIN] USE_CURRENT_LOCATION OVERRIDE: Replacing translated bbox {translated_bbox} with session bbox {session_bbox} ({session_location})")
+                            stac_params['bbox'] = session_bbox
+                            stac_params['location_name'] = session_location or 'Current map location'
                     
                     # ========================================================================
                     # [ALERT] LOCATION VALIDATION: Check if location is required but missing

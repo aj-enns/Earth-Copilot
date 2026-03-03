@@ -2700,6 +2700,16 @@ ESSENTIAL FIRE:
             print(f"  - Final STAC query: {stac_query}")
             return stac_query
             
+        except ValueError as ve:
+            # Re-raise LOCATION_REQUIRED so translate_query can apply session_bbox fallback
+            if "LOCATION_REQUIRED" in str(ve):
+                logger.info("[PIN] LOCATION_REQUIRED: Re-raising so translate_query can apply session_bbox fallback")
+                raise
+            # Other ValueErrors (e.g., location resolution failure) fall through to basic builder
+            print(f"[FAIL][ALERT] DEBUG: AGENT 2 ValueError: {ve}")
+            logger.error(f"[FAIL] AGENT 2 ValueError: {ve}")
+            logger.info("[LIST] Falling back to basic query builder")
+            return await self._build_stac_query_basic(query, collections)
         except Exception as e:
             print(f"[FAIL][ALERT] DEBUG: AGENT 2 EXCEPTION CAUGHT!")
             print(f"[FAIL][ALERT] Exception type: {type(e).__name__}")
@@ -6338,6 +6348,49 @@ Location to analyze: {location_name}"""
         except ValueError as ve:
             # Handle specific location requirement error
             if "LOCATION_REQUIRED" in str(ve):
+                # ================================================================
+                # [PIN] SESSION BBOX FALLBACK: Use session bbox when no location
+                # in query and build_stac_query_agent raised LOCATION_REQUIRED.
+                # This handles follow-up queries like "show me Sentinel tiles"
+                # after navigating to a location.
+                # ================================================================
+                if session_bbox:
+                    logger.info(f"[PIN] LOCATION_REQUIRED caught but session_bbox available: {session_bbox}")
+                    logger.info(f"[PIN] Retrying with session bbox as fallback location...")
+                    
+                    # Re-run build_stac_query_agent's output but inject session bbox
+                    try:
+                        # Build a minimal STAC query with the session bbox
+                        stac_query = await self.build_stac_query_agent(natural_query, collections)
+                    except ValueError:
+                        # Still no location - build basic query
+                        stac_query = await self._build_stac_query_basic(natural_query, collections)
+                    
+                    # Inject session bbox regardless of what the agent returned
+                    stac_query["bbox"] = session_bbox
+                    stac_query["location_name"] = "Current map location"
+                    
+                    bbox = session_bbox
+                    location_name = "Current map location"
+                    
+                    log_pipeline_step(session_id, "LOCATION", "FALLBACK", {
+                        "source": "session_bbox (LOCATION_REQUIRED caught)",
+                        "bbox": session_bbox
+                    })
+                    
+                    # Build result similar to the normal success path
+                    result = {
+                        **stac_query,
+                        "confidence": 0.8,
+                        "translation_method": "semantic_kernel",
+                        "analysis": {"needs_clarification": False, "quality_score": 0.7},
+                        "clarification_questions": [],
+                        "needs_clarification": False
+                    }
+                    
+                    logger.info(f"[OK] Session bbox fallback successful: bbox={session_bbox}")
+                    return result
+                
                 logger.warning(f"[WARN] Location required but not found in query: '{natural_query}'")
                 
                 # [SEARCH] PIPELINE LOG: Error
