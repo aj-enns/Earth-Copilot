@@ -291,13 +291,13 @@ EXPLICIT_RENDER_CONFIGS: Dict[str, RenderingConfig] = {
         collection_id="sentinel-2-l2a",
         data_type=DataType.OPTICAL,
         assets=["B04", "B03", "B02"],
-        rescale=(0, 3000),  # Sentinel-2 L2A surface reflectance scaled like HLS for proper contrast
+        rescale=(0, 10000),  # Sentinel-2 L2A full surface reflectance range (prevents white-out on bright terrain like deserts)
         color_formula="gamma RGB 2.7, saturation 1.5, sigmoidal RGB 15 0.55",  # Standard optical enhancement
         resampling="lanczos",
         tile_scale=2,  # @2x for highest resolution
         min_zoom=6,
         max_zoom=22,  # Native resolution ~10m, allow deep zoom
-        notes="Sentinel-2 Level-2A surface reflectance, 0-10000 range scaled to 0-3000 for contrast"
+        notes="Sentinel-2 Level-2A surface reflectance, full 0-10000 range with gamma+sigmoidal color formula"
     ),
     
     "landsat-c2-l1": RenderingConfig(
@@ -1275,9 +1275,9 @@ def build_mosaic_tilejson_url(
     if needs_raw_bands or not config:
         # Use raw band rendering for mosaic
         if 'sentinel-2' in collection_lower:
-            # Sentinel-2 RGB bands with proper rescale for surface reflectance (0-10000 scaled)
+            # Sentinel-2 RGB bands with full rescale range (prevents white-out on bright desert terrain)
             params.extend(["assets=B04", "assets=B03", "assets=B02"])
-            params.append("rescale=0,3000")
+            params.append("rescale=0,10000")
             params.append("color_formula=gamma+RGB+2.7%2C+saturation+1.5%2C+sigmoidal+RGB+15+0.55")
             logger.info(f"[ART] Using raw RGB bands (B04,B03,B02) for Sentinel-2 mosaic")
         elif 'landsat' in collection_lower:
